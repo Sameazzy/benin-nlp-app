@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Benin NLP</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='favicon-32x32.png') }}">
+  <link rel="icon" type="image/png" sizes="16x16" href="{{ url_for('static', filename='favicon-16x16.png') }}">
+  <link rel="manifest" href="{{ url_for('static', filename='site.webmanifest') }}">
+
+  <style>
+    .rec-timer {
+      color: red;
+      font-weight: bold;
+      font-family: monospace;
+      min-width: 60px;
+    }
+    .status { font-size: 1.2rem; }
+    .uploaded {
+      background-color: #d4edda !important; /* light green */
+      border-color: #c3e6cb !important;
+    }
+    .progress {
+      height: 20px;
+      margin-top: 6px;
+      margin-bottom: 6px;
+    }
+    #thankYouMsg {
+      margin-top: 20px;
+      font-size: 1.5rem;
+      font-weight: bold;
+      color: green;
+    }
+    .logout-bar {
+      display: flex;
+      justify-content: flex-end;
+      margin-bottom: 15px;
+      gap: 15px;
+      align-items: center;
+    }
+    .progress {
+      height: 20px;
+      margin-top: 6px;
+      margin-bottom: 6px;
+      display: none; /* Hidden by default */
+    }
+    .progress-bar {
+      transition: width 0.3s ease;
+    }
+  </style>
+</head>
+<body class="container py-4">
+
+  <div class="logout-bar">
+    <div>Logged in as: <strong>{{ username }}</strong></div>
+    <a href="/logout" class="btn btn-outline-danger btn-sm">Logout</a>
+  </div>
+
+  <div class="d-flex align-items-center mb-4">
+    <img src="{{ url_for('static', filename='logo.png') }}" alt="Logo" style="height: 50px; margin-right: 15px;">
+    <h1 class="mb-0">BENIN NLP PROJECT</h1>
+  </div>
+  <h2 class="mb-4">Please record the translation of each prompt in Benin language</h2>
+
+  <div class="mb-4">
+    <label><strong>Overall Upload Progress</strong></label>
+    <div class="progress" id="overallProgressContainer">
+      <div class="progress-bar progress-bar-striped progress-bar-animated bg-success"
+          id="overallProgressBar"
+          role="progressbar"
+          style="width: 0%"
+          aria-valuemin="0" aria-valuemax="100">
+        0% Complete
+      </div>
+    </div>
+  </div>
+
+  <div id="promptsContainer"></div>
+
+  <div id="thankYouMsg" style="display:none;"></div>
+
+<script>
+  const prompts = {{ prompts|tojson }};
+  const promptsPerPage = 10;
+  let currentPage = 1;
+
+  let mediaRecorders = [];
+  let audioChunks = [];
+  let timers = [], seconds = [], recordingIndex = null;
+  let uploadedStatus = new Array(prompts.length).fill(false);
+  let uploadProgress = new Array(prompts.length).fill(0);
+
+  const promptsContainer = document.getElementById("promptsContainer");
+  const thankYouMsg = document.getElementById("thankYouMsg");
+
+  function renderPage(page) {
+    promptsContainer.innerHTML = "";
+    const start = (page - 1) * promptsPerPage;
+    const end = Math.min(start + promptsPerPage, prompts.length);
+    const pagePrompts = prompts.slice(start, end);
+
+    pagePrompts.forEach((text, index) => {
+      const globalIndex = start + index;
+      const card = document.createElement("div");
+      card.className = "card p-3 mb-3";
+      if (uploadedStatus[globalIndex]) card.classList.add('uploaded');
+
+      card.innerHTML = `
+        <p><strong>Prompt ${globalIndex + 1}:</strong> ${text}</p>
+        <div class="d-flex align-items-center gap-3 mb-2">
+          <div class="rec-timer" id="timer${globalIndex}">00:00</div>
+          <audio id="audio${globalIndex}" controls style="flex:1"></audio>
+        </div>
+        <div class="progress" id="progressContainer${globalIndex}" style="display:none;">
+          <div class="progress-bar progress-bar-striped progress-bar-animated" 
+               id="progressBar${globalIndex}" 
+               role="progressbar" 
+               style="width: 0%" 
+               aria-valuemin="0" aria-valuemax="100"></div>
+        </div>
+        <div class="btn-group mb-2" role="group">
+          <button class="btn btn-primary" id="startBtn${globalIndex}" onclick="startRecording(${globalIndex})">Start</button>
+          <button class="btn btn-secondary" id="stopBtn${globalIndex}" onclick="stopRecording(${globalIndex})" disabled>Stop</button>
+          <button class="btn btn-success" id="uploadBtn${globalIndex}" onclick="uploadAudio(${globalIndex})">Upload</button>
+          <button class="btn btn-danger" id="cancelBtn${globalIndex}" onclick="cancelUpload(${globalIndex})">Cancel</button>
+        </div>
+        <div id="status${globalIndex}" class="status"></div>
+        <input type="file" id="audioInput${globalIndex}" hidden />
+      `;
+
+      promptsContainer.appendChild(card);
+
+      // Disable buttons if uploaded
+      if (uploadedStatus[globalIndex]) {
+        document.getElementById(`startBtn${globalIndex}`).disabled = true;
+        document.getElementById(`uploadBtn${globalIndex}`).disabled = true;
+      } else {
+        document.getElementById(`uploadBtn${globalIndex}`).disabled = true; // Upload disabled until record
+        document.getElementById(`cancelBtn${globalIndex}`).disabled = true; // Cancel disabled until uploaded
+      }
+    });
+
+    renderPagination();
+    checkAllUploaded();
+  }
+
+  function renderPagination() {
+    const totalPages = Math.ceil(prompts.length / promptsPerPage);
+    const paginationHTML = `
+      <div class="d-flex justify-content-between align-items-center my-4">
+        <button class="btn btn-outline-primary" onclick="prevPage()" ${currentPage === 1 ? 'disabled' : ''}>⬅ Previous</button>
+        <span>Page ${currentPage} of ${totalPages}</span>
+        <button class="btn btn-outline-primary" onclick="nextPage()" ${currentPage === totalPages ? 'disabled' : ''}>Next ➡</button>
+      </div>
+    `;
+    promptsContainer.insertAdjacentHTML('beforeend', paginationHTML);
+  }
+
+  function prevPage() {
+    if (currentPage > 1) {
+      currentPage--;
+      renderPage(currentPage);
+      window.scrollTo(0, 0);
+    }
+  }
+
+  function nextPage() {
+    const totalPages = Math.ceil(prompts.length / promptsPerPage);
+    if (currentPage < totalPages) {
+      currentPage++;
+      renderPage(currentPage);
+      window.scrollTo(0, 0);
+    }
+  }
+
+  function startRecording(index) {
+    if (recordingIndex !== null) {
+      alert("Stop the current recording first.");
+      return;
+    }
+
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+      const recorder = new MediaRecorder(stream);
+      mediaRecorders[index] = recorder;
+      audioChunks[index] = [];
+      seconds[index] = 0;
+
+      recorder.ondataavailable = e => audioChunks[index].push(e.data);
+
+      recorder.onstop = () => {
+        const blob = new Blob(audioChunks[index], { type: "audio/webm" });
+        const url = URL.createObjectURL(blob);
+        const audioEl = document.getElementById(`audio${index}`);
+        audioEl.src = url;
+
+        const file = new File([blob], `00${index + 1}.webm`, { type: 'audio/webm' });
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        document.getElementById(`audioInput${index}`).files = dt.files;
+
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      recorder.start();
+      recordingIndex = index;
+
+      document.getElementById(`startBtn${index}`).disabled = true;
+      document.getElementById(`stopBtn${index}`).disabled = false;
+      document.getElementById(`uploadBtn${index}`).disabled = true;
+      document.getElementById(`cancelBtn${index}`).disabled = true;
+
+      timers[index] = setInterval(() => {
+        seconds[index]++;
+        const m = String(Math.floor(seconds[index] / 60)).padStart(2, '0');
+        const s = String(seconds[index] % 60).padStart(2, '0');
+        document.getElementById(`timer${index}`).textContent = `${m}:${s}`;
+      }, 1000);
+    }).catch(err => {
+      alert("Microphone access denied or not available.");
+    });
+  }
+
+  function stopRecording(index) {
+    if (mediaRecorders[index]) {
+      mediaRecorders[index].stop();
+    }
+    clearInterval(timers[index]);
+    recordingIndex = null;
+
+    document.getElementById(`stopBtn${index}`).disabled = true;
+    document.getElementById(`uploadBtn${index}`).disabled = false;
+  }
+
+  function uploadAudio(index) {
+    const fileInput = document.getElementById(`audioInput${index}`);
+    const statusEl = document.getElementById(`status${index}`);
+    const progressContainer = document.getElementById(`progressContainer${index}`);
+    const progressBar = document.getElementById(`progressBar${index}`);
+
+    if (!fileInput.files.length) {
+      alert("No recording found to upload.");
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append('audio_data', fileInput.files[0]);
+    formData.append('filename', `00${index + 1}.wav`);
+
+    progressContainer.style.display = 'block';
+    progressBar.style.width = '0%';
+    progressBar.textContent = '0%';
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/upload', true);
+
+    xhr.upload.onprogress = function(event) {
+      if (event.lengthComputable) {
+        const percentComplete = (event.loaded / event.total) * 100;
+        uploadProgress[index] = percentComplete;
+        progressBar.style.width = percentComplete + '%';
+        progressBar.textContent = percentComplete + '%';
+      }
+    };
+
+    xhr.onload = function() {
+      progressContainer.style.display = 'none';
+      if (xhr.status === 200) {
+        uploadedStatus[index] = true;
+        statusEl.textContent = "✅ Uploaded";
+
+        document.getElementById(`startBtn${index}`).disabled = true;
+        document.getElementById(`uploadBtn${index}`).disabled = true;
+        document.getElementById(`cancelBtn${index}`).disabled = false;
+
+        document.getElementById(`timer${index}`).closest('.card').classList.add('uploaded');
+
+        updateOverallProgressBar();
+        checkAllUploaded();
+      } else {
+        statusEl.textContent = "❌ Upload failed";
+      }
+    };
+
+    xhr.onerror = function() {
+      progressContainer.style.display = 'none';
+      statusEl.textContent = "❌ Error uploading";
+    };
+
+    xhr.send(formData);
+  }
+
+  function cancelUpload(index) {
+    const statusEl = document.getElementById(`status${index}`);
+
+    if (!uploadedStatus[index]) return;
+
+    fetch('/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filename: `00${index + 1}.wav`
+      })
+    })
+    .then(res => res.json())
+    .then(data => {
+      if (data.success) {
+        uploadedStatus[index] = false;
+        statusEl.textContent = "";
+
+        document.getElementById(`startBtn${index}`).disabled = false;
+        document.getElementById(`uploadBtn${index}`).disabled = true;
+        document.getElementById(`cancelBtn${index}`).disabled = true;
+
+        document.getElementById(`audio${index}`).src = "";
+        if (timers[index]) {
+          clearInterval(timers[index]);
+          timers[index] = null;
+        }
+        seconds[index] = 0;
+        document.getElementById(`timer${index}`).textContent = '00:00';
+        document.getElementById(`timer${index}`).closest('.card').classList.remove('uploaded');
+
+        updateOverallProgressBar();
+        checkAllUploaded();
+      } else {
+        statusEl.textContent = "⚠ Delete failed";
+      }
+    });
+  }
+  // On load: fetch uploaded status from backend and render page
+  window.addEventListener('DOMContentLoaded', () => {
+    fetch('/status')
+      .then(res => res.json())
+      .then(data => {
+        if (data.status) {
+          uploadedStatus = data.status;
+          updateOverallProgressBar();
+        }
+        renderPage(currentPage);
+      })
+      .catch(() => {
+        renderPage(currentPage);
+      });
+  });
+
+   function checkAllUploaded() {
+    const allUploaded = uploadedStatus.every(status => status === true);
+    if (allUploaded) {
+      thankYouMsg.style.display = 'block';
+      thankYouMsg.textContent = `🎉 Thank you, {{ username }}, all prompts uploaded!`;
+    } else {
+      thankYouMsg.style.display = 'none';
+    }
+  }
+  
+  function updateOverallProgressBar() {
+    const total = uploadedStatus.length;
+    const uploaded = uploadedStatus.filter(Boolean).length;
+    const percent = Math.round((uploaded / total) * 100);
+
+    const container = document.getElementById('overallProgressContainer');
+    const bar = document.getElementById('overallProgressBar');
+
+    container.style.display = 'block';
+    bar.style.width = percent + '%';
+    bar.textContent = `${percent}% Complete`;
+  }
+
+</script>
+
+</body>
+</html>
